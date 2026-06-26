@@ -1,5 +1,5 @@
 import { Routes, Route, NavLink, Navigate, useNavigate, useLocation } from "react-router-dom";
-import { LayoutDashboard, Tags, Users, FileText, History as HistoryIcon, MapPin } from "lucide-react";
+import { LayoutDashboard, Tags, Users, FileText, History as HistoryIcon, MapPin, Layers, Network, Boxes } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { api, tokenStore } from "@/lib/api";
@@ -7,7 +7,10 @@ import { Topbar } from "@/components/Topbar";
 import Dashboard from "@/pages/Dashboard";
 import Keywords from "@/pages/Keywords";
 import Cities from "@/pages/Cities";
+import VendorAliases from "@/pages/VendorAliases";
+import Stages from "@/pages/Stages";
 import Results from "@/pages/Results";
+import Vendors from "@/pages/Vendors";
 import Logs from "@/pages/Logs";
 import History from "@/pages/History";
 import Login from "@/pages/Login";
@@ -15,8 +18,11 @@ import Login from "@/pages/Login";
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/cities", label: "Cities", icon: MapPin },
+  { to: "/vendor-aliases", label: "Vendor Aliases", icon: Network },
   { to: "/keywords", label: "Keywords", icon: Tags },
-  { to: "/results", label: "Results", icon: Users },
+  { to: "/results", label: "Contractors", icon: Users },
+  { to: "/vendors", label: "Vendors", icon: Boxes },
+  { to: "/stages", label: "Pipeline Stages", icon: Layers },
   { to: "/logs", label: "Logs", icon: FileText },
   { to: "/history", label: "History", icon: HistoryIcon },
 ];
@@ -66,10 +72,10 @@ function Shell({ user, children }: { user: { email: string; name?: string } | nu
       <aside className="w-60 border-r bg-card flex flex-col shrink-0">
         <div className="px-5 py-4 border-b">
           <div className="font-semibold text-base flex items-center gap-2">
-            <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground text-xs font-bold">CS</span>
-            Contractor Scraper
+            <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground text-xs font-bold">WS</span>
+            Westpac Sales Scraper
           </div>
-          <div className="text-[10px] text-muted-foreground mt-1 ml-9">Florida Lead Gen</div>
+          <div className="text-[10px] text-muted-foreground mt-1 ml-9">Contractor &amp; Vendor Leads · FL + TN</div>
         </div>
         <nav className="flex-1 p-2.5 space-y-0.5 overflow-y-auto">
           {nav.map(({ to, label, icon: Icon }) => (
@@ -123,6 +129,22 @@ export default function App() {
         }
       />
       <Route
+        path="/vendor-aliases"
+        element={
+          <RequireAuth>
+            <VendorAliases />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/stages"
+        element={
+          <RequireAuth>
+            <Stages />
+          </RequireAuth>
+        }
+      />
+      <Route
         path="/keywords"
         element={
           <RequireAuth>
@@ -135,6 +157,14 @@ export default function App() {
         element={
           <RequireAuth>
             <Results />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/vendors"
+        element={
+          <RequireAuth>
+            <Vendors />
           </RequireAuth>
         }
       />

@@ -109,13 +109,16 @@ async def list_contractors(
 
 
 EXPORT_COLUMNS = [
-    "id", "business_name", "city", "zip_code", "address",
-    "tier", "specialty_keywords", "google_categories", "services_listed",
+    "id", "business_name", "record_type", "canonical_entity_id",
+    "city", "zip_code", "state", "county", "address",
+    "tier", "city_tier", "specialty_keywords", "google_categories", "services_listed",
     "phone", "email", "website", "owner_name",
     "license_status", "license_numbers", "license_categories",
+    "is_big_box", "vendor_type", "canonical_network",
     "google_rating", "google_review_count",
     "bbb_rating", "bbb_accredited", "years_in_business",
-    "social_profiles", "sources", "place_ids",
+    "social_profiles", "sources", "source",
+    "enrichment_status", "excluded_reason", "out_of_territory", "place_ids",
     "scraped_at", "job_id",
 ]
 
@@ -143,15 +146,20 @@ async def export_contractors(
     sort_by: str = "id",
     sort_dir: str = "desc",
     format: str = Query("csv", description="csv | xlsx"),
+    include_excluded: bool = Query(False, description="include lumber/out-of-territory rows (audit)"),
 ):
-    """Download the full filtered contractor set (no pagination) as CSV or Excel.
-    `format=csv` streams row-by-row; `format=xlsx` builds an .xlsx workbook."""
+    """Download the DELIVERABLE contractor set as CSV or Excel. By default this
+    drops lumber-excluded + out-of-territory rows (the clean output list). Pass
+    include_excluded=true to export everything (audit). No pagination."""
     fmt = (format or "csv").lower()
     if fmt not in EXPORT_FORMATS:
         raise HTTPException(status_code=422, detail=f"format must be one of {sorted(EXPORT_FORMATS)}")
     sort_col = sort_by if sort_by in SORTABLE else "id"
+    fd = filters.to_dict()
+    fd["include_excluded"] = include_excluded
+    fd["include_out_of_territory"] = include_excluded
     rows_iter = lambda: db.iter_contractors_filtered(
-        filters=filters.to_dict(), sort_by=sort_col, sort_dir=sort_dir,
+        filters=fd, sort_by=sort_col, sort_dir=sort_dir,
     )
 
     if fmt == "xlsx":
@@ -232,3 +240,14 @@ async def contractor_classification(contractor_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Contractor not found")
     return db.get_contractor_classification(contractor_id)
+
+
+@router.get("/{contractor_id}/sources")
+async def contractor_sources(contractor_id: int):
+    """Per-source raw provenance for one contractor (Workstream E) — which sources
+    (Google/BBB/license/Apollo) produced this business, linked by canonical_entity_id."""
+    row = db.get_contractor(contractor_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Contractor not found")
+    ceid = row.get("canonical_entity_id")
+    return db.list_source_records(ceid) if ceid else []

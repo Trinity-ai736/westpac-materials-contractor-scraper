@@ -64,6 +64,19 @@ export type FacetItem = { value: string; n: number };
 export type Contractor = {
   id: number;
   business_name: string;
+  // record type + territory tags (vendors live in the same table as contractors)
+  record_type: string | null;          // "contractor" | "vendor" (null = legacy contractor)
+  state: string | null;
+  county: string | null;
+  city_tier: string | number | null;   // geographic tier (1/2), distinct from the classification `tier`
+  source: string | null;
+  // vendor-only fields (empty on contractor rows)
+  is_big_box: boolean | null;
+  vendor_type: string | null;          // specialty_distributor | big_box_retailer | independent
+  canonical_network: string | null;    // GMS, L&W Supply, … (rolled-up entity)
+  // status flags
+  excluded_reason: string | null;      // e.g. lumber:category:lumberyard
+  out_of_territory: boolean | null;
   city: string | null;
   zip_code: string | null;
   address: string | null;
@@ -88,6 +101,23 @@ export type Contractor = {
   place_ids: string[] | null;
   scraped_at: string;
   job_id: string;
+  // Workstream E — additional tags not already declared above
+  canonical_entity_id?: string | null;
+  enrichment_status?: string | null;
+  stage?: string | null;
+};
+
+export type SourceRow = {
+  id: number;
+  canonical_entity_id: string;
+  source: string | null;
+  scrape_run_id: string | null;
+  business_name: string | null;
+  phone: string | null;
+  city: string | null;
+  zip_code: string | null;
+  website: string | null;
+  stage: string | null;
 };
 
 /** Full query surface for the contractor grid + CSV export.
@@ -163,6 +193,50 @@ export type City = {
   zips: string[];
   created_at: string;
   updated_at: string;
+  tier?: number | null;
+  county?: string | null;
+};
+
+export type Exclusion = {
+  id: number;
+  state: string;
+  region_name: string;
+  match_values: string[];
+  zip_codes: string[];
+  locked: boolean;
+};
+
+export type StageBatch = {
+  batch: string;
+  batch_name: string;
+  stages: Record<string, number>;
+};
+
+export type StageRecord = {
+  id: number;
+  batch: string;
+  batch_name?: string | null;
+  stage: string;
+  record_type: string;
+  canonical_entity_id?: string | null;
+  state: string | null;
+  county?: string | null;
+  city: string | null;
+  city_tier: string | null;
+  zip_code: string | null;
+  source: string | null;
+  business_name: string | null;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
+  canonical_network?: string | null;
+  vendor_type?: string | null;
+  is_big_box?: boolean | null;
+  out_of_territory?: boolean | null;
+  enrichment_status?: string | null;
+  excluded_reason: string | null;
+  // Full record snapshot — every column the pipeline carried at this stage.
+  data?: Record<string, any> | null;
 };
 
 export type Settings = {
@@ -172,6 +246,11 @@ export type Settings = {
   discovery_budget_usd: number | null;
   bbb_budget_usd: number | null;
   apollo_budget_usd: number | null;
+  // TN search radii (miles).
+  vendor_radius_miles: number;
+  contractor_radius_miles: number;
+  // Optional statewide TN verify-a-name license enrichment (slow; default off).
+  enable_tn_verify: boolean;
 };
 
 export type UpdateSettingsBody = {
@@ -179,6 +258,58 @@ export type UpdateSettingsBody = {
   discovery_budget_usd?: number | null;
   bbb_budget_usd?: number | null;
   apollo_budget_usd?: number | null;
+  vendor_radius_miles?: number | null;
+  contractor_radius_miles?: number | null;
+  enable_tn_verify?: boolean | null;
+};
+
+// Dealer/vendor account locations — anchor the TN contractor 50-mi radius.
+export type Dealer = {
+  id: number;
+  client_id: string | null;
+  name: string;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  zip_code: string | null;
+  lat: number | null;
+  lng: number | null;
+  radius_miles: number | null;
+  is_big_box: boolean | null;
+  active: boolean | null;
+  notes: string | null;
+};
+export type DealerBody = {
+  name: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  zip_code?: string;
+  lat?: number | null;
+  lng?: number | null;
+  radius_miles?: number | null;
+  is_big_box?: boolean;
+  notes?: string;
+  active?: boolean;
+};
+
+// Vendor alias / subsidiary map — rolls brand/branch names up to one network.
+export type VendorAlias = {
+  id: number;
+  alias: string;
+  canonical_network: string;
+  entity: string | null;
+  vendor_type: string | null;
+  active: boolean | null;
+  notes: string | null;
+};
+export type VendorAliasBody = {
+  alias: string;
+  canonical_network: string;
+  entity?: string;
+  vendor_type?: string;
+  notes?: string;
+  active?: boolean;
 };
 
 // ── API surface ──
@@ -197,7 +328,11 @@ export const api = {
     request<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(body) }),
 
   // Jobs
-  startJob: () => request<{ job_id: string; status: string }>("/api/jobs/start", { method: "POST" }),
+  startJob: (body?: { mode?: string; territory?: string }) =>
+    request<{ job_id: string; status: string; mode?: string; territory?: string }>(
+      "/api/jobs/start",
+      { method: "POST", body: JSON.stringify(body ?? { mode: "contractor", territory: "FL" }) },
+    ),
   stopJob: (jobId: string) =>
     request<{ job_id: string; status: string; stop_requested: boolean }>(
       `/api/jobs/${jobId}/stop`, { method: "POST" },
@@ -238,6 +373,56 @@ export const api = {
   removeZip: (cityId: number, zip: string) =>
     request<City>(`/api/cities/${cityId}/zips/${encodeURIComponent(zip)}`, { method: "DELETE" }),
 
+  // Pipeline stages (Workstream E)
+  stageOrder: () => request<{ stages: string[] }>("/api/stages/order"),
+  stageBatches: () => request<StageBatch[]>("/api/stages/batches"),
+  stageRecords: (batch: string, stage: string, limit = 1000) =>
+    request<{ batch: string; stage: string; total: number; rows: StageRecord[] }>(
+      `/api/stages/records${qs({ batch, stage, limit })}`,
+    ),
+  exportStage: async (batch: string, stage: string) => {
+    const token = tokenStore.get();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${API_URL}/api/stages/export${qs({ batch, stage })}`, { headers });
+    if (!res.ok) throw new ApiError(res.status, null, `Export ${res.status}`);
+    const blob = await res.blob();
+    const filename =
+      res.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/)?.[1] ||
+      `stage_${stage}_${new Date().toISOString().slice(0, 10)}.csv`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  },
+
+  // Dealer/vendor accounts (contractor radius anchors)
+  listDealers: () => request<Dealer[]>("/api/dealers"),
+  createDealer: (body: DealerBody) =>
+    request<Dealer>("/api/dealers", { method: "POST", body: JSON.stringify(body) }),
+  updateDealer: (id: number, body: DealerBody) =>
+    request<Dealer>(`/api/dealers/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteDealer: (id: number) =>
+    request<{ deleted: boolean; id: number }>(`/api/dealers/${id}`, { method: "DELETE" }),
+
+  // Vendor alias / subsidiary map
+  listVendorAliases: () => request<VendorAlias[]>("/api/vendor-aliases"),
+  createVendorAlias: (body: VendorAliasBody) =>
+    request<VendorAlias>("/api/vendor-aliases", { method: "POST", body: JSON.stringify(body) }),
+  updateVendorAlias: (id: number, body: VendorAliasBody) =>
+    request<VendorAlias>(`/api/vendor-aliases/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteVendorAlias: (id: number) =>
+    request<{ deleted: boolean; id: number }>(`/api/vendor-aliases/${id}`, { method: "DELETE" }),
+
+  // Excluded regions (territory exclusions)
+  listExclusions: (state?: string) =>
+    request<Exclusion[]>(`/api/exclusions${qs({ state })}`),
+  addExclusion: (city: string, state = "TN") =>
+    request<Exclusion>("/api/exclusions", { method: "POST", body: JSON.stringify({ city, state }) }),
+  deleteExclusion: (id: number) =>
+    request<{ deleted: boolean; id: number }>(`/api/exclusions/${id}`, { method: "DELETE" }),
+
   // Contractors
   listContractors: (params: ContractorQuery = {}) =>
     request<Paged<Contractor>>(`/api/contractors${qs(params)}`),
@@ -248,6 +433,8 @@ export const api = {
   getContractor: (id: number) => request<Contractor>(`/api/contractors/${id}`),
   contractorClassification: (id: number) =>
     request<ClassificationLog[]>(`/api/contractors/${id}/classification`),
+  contractorSources: (id: number) => request<SourceRow[]>(`/api/contractors/${id}/sources`),
+  vendorSources: (id: number) => request<SourceRow[]>(`/api/vendors/${id}/sources`),
 
   exportContractors: async (
     params: Omit<ContractorQuery, "limit" | "offset"> & { format?: "csv" | "xlsx" } = {},
@@ -281,6 +468,34 @@ export const api = {
     document.body.appendChild(a);
     a.click();
     a.remove();
+    URL.revokeObjectURL(url);
+  },
+
+  // Vendors (separate tab from contractors)
+  listVendors: (params: ContractorQuery = {}) =>
+    request<Paged<Contractor>>(`/api/vendors${qs(params)}`),
+  vendorFacets: (jobId?: string) =>
+    request<{ total: number; cities: FacetItem[]; vendor_types: FacetItem[]; networks: FacetItem[] }>(
+      `/api/vendors/facets${qs({ job_id: jobId })}`,
+    ),
+  getVendor: (id: number) => request<Contractor>(`/api/vendors/${id}`),
+  exportVendors: async (
+    params: Omit<ContractorQuery, "limit" | "offset"> & { format?: "csv" | "xlsx" } = {},
+  ) => {
+    const token = tokenStore.get();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${API_URL}/api/vendors/export${qs(params)}`, { headers });
+    if (!res.ok) throw new ApiError(res.status, null, `Export ${res.status}`);
+    const blob = await res.blob();
+    const ext = params.format === "xlsx" ? "xlsx" : "csv";
+    const filename =
+      res.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/)?.[1] ||
+      `vendors_${new Date().toISOString().slice(0, 10)}.${ext}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   },
 
